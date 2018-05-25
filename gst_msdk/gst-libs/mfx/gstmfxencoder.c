@@ -716,6 +716,14 @@ gst_mfx_encoder_replace (GstMfxEncoder ** old_encoder_ptr,
   gst_object_replace ((GstObject **) old_encoder_ptr, GST_OBJECT (new_encoder));
 }
 
+void
+gst_mfx_encoder_set_peer_id (GstMfxEncoder * encoder, gint peer_id)
+{
+  g_return_if_fail (encoder != NULL);
+
+  GST_MFX_ENCODER_GET_PRIVATE (encoder)->peer_id = peer_id;
+}
+
 gboolean
 gst_mfx_encoder_set_async_depth (GstMfxEncoder * encoder, mfxU16 async_depth)
 {
@@ -883,6 +891,13 @@ set_extended_coding_options (GstMfxEncoder * encoder)
   }
 
   switch (priv->rc_method) {
+    case GST_MFX_RATECONTROL_QVBR:
+      priv->extco3.Header.BufferId = MFX_EXTBUFF_CODING_OPTION3;
+      priv->extco3.Header.BufferSz = sizeof (priv->extco3);
+      priv->extco3.QVBRQuality = CLAMP (priv->global_quality, 1, 51);
+      priv->extparam_internal[priv->params.NumExtParam++] =
+          (mfxExtBuffer *) & priv->extco3;
+      break;
     case GST_MFX_RATECONTROL_LA_BRC:
     case GST_MFX_RATECONTROL_LA_ICQ:
     case GST_MFX_RATECONTROL_LA_HRD:
@@ -1014,7 +1029,8 @@ static gboolean
 configure_encoder_sharing (GstMfxEncoder * encoder)
 {
   GstMfxEncoderPrivate *const priv = GST_MFX_ENCODER_GET_PRIVATE (encoder);
-  GstMfxTask *task = gst_mfx_task_aggregator_get_last_task (priv->aggregator);
+  GstMfxTask *task =
+      gst_mfx_task_aggregator_find_task (priv->aggregator, priv->peer_id);
 
   if (task) {
     mfxFrameAllocRequest *request = gst_mfx_task_get_request (task);
@@ -1056,7 +1072,7 @@ configure_encoder_sharing (GstMfxEncoder * encoder)
       }
       /* Get new VPP output task */
       gst_mfx_task_unref (task);
-      task = gst_mfx_task_aggregator_get_last_task (priv->aggregator);
+      task = gst_mfx_filter_get_task (priv->filter, GST_MFX_TASK_VPP_OUT);
       /* Get updated output mfxFrameInfo */
       request = gst_mfx_task_get_request (task);
     }

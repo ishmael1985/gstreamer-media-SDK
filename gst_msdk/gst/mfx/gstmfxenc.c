@@ -242,30 +242,13 @@ error_output_state:
 }
 
 static GstCaps *
-gst_mfxenc_get_caps_impl (GstVideoEncoder * venc)
+gst_mfxenc_get_caps (GstVideoEncoder * venc, GstCaps * filter)
 {
   GstMfxPluginBase *const plugin = GST_MFX_PLUGIN_BASE (venc);
   GstCaps *caps;
 
-  if (plugin->sinkpad_caps)
-    caps = gst_caps_ref (plugin->sinkpad_caps);
-  else
-    caps = gst_pad_get_pad_template_caps (plugin->sinkpad);
-  return caps;
-}
-
-static GstCaps *
-gst_mfxenc_get_caps (GstVideoEncoder * venc, GstCaps * filter)
-{
-  GstCaps *caps, *out_caps;
-
-  out_caps = gst_mfxenc_get_caps_impl (venc);
-  if (out_caps && filter) {
-    caps = gst_caps_intersect_full (out_caps, filter, GST_CAPS_INTERSECT_FIRST);
-    gst_caps_unref (out_caps);
-    out_caps = caps;
-  }
-  return out_caps;
+  caps = gst_pad_get_pad_template_caps (plugin->sinkpad);
+  return gst_video_encoder_proxy_getcaps (venc, caps, filter);
 }
 
 static gboolean
@@ -290,6 +273,7 @@ ensure_encoder (GstMfxEnc * encode)
   GstMfxEncClass *klass = GST_MFXENC_GET_CLASS (encode);
   GstMfxEncoderStatus status;
   GPtrArray *const prop_values = encode->prop_values;
+  gint peer_id;
   guint i;
 
   g_return_val_if_fail (klass->alloc_encoder, FALSE);
@@ -300,6 +284,9 @@ ensure_encoder (GstMfxEnc * encode)
   encode->encoder = klass->alloc_encoder (encode);
   if (!encode->encoder)
     return FALSE;
+
+  if (gst_mfx_query_peer_task (GST_ELEMENT (encode), &peer_id))
+    gst_mfx_encoder_set_peer_id (encode->encoder, peer_id);
 
   if (prop_values) {
     for (i = 0; i < prop_values->len; i++) {
@@ -332,6 +319,31 @@ gst_mfxenc_stop (GstVideoEncoder * venc)
   return gst_mfxenc_destroy (GST_MFXENC_CAST (venc));
 }
 
+static GstFlowReturn
+gst_mfxenc_finish (GstVideoEncoder * venc)
+{
+  GstMfxEnc *const encode = GST_MFXENC_CAST (venc);
+  GstMfxEncoderStatus status;
+  GstVideoCodecFrame *frame;
+  GstFlowReturn ret = GST_FLOW_OK;
+
+  /* Return "not-negotiated" error since this means we did not even reach
+   * GstVideoEncoder::set_format () state, where the encoder could have
+   * been created */
+  if (!encode->encoder)
+    return GST_FLOW_NOT_NEGOTIATED;
+
+  do {
+    status = gst_mfx_encoder_flush (encode->encoder, &frame);
+    if (GST_MFX_ENCODER_STATUS_SUCCESS != status)
+      break;
+    ret = gst_mfxenc_push_frame (encode, gst_video_codec_frame_ref (frame));
+  } while (GST_FLOW_OK == ret);
+
+  return ret;
+}
+
+
 static gboolean
 set_codec_state (GstMfxEnc * encode, GstVideoCodecState * state)
 {
@@ -354,6 +366,7 @@ static gboolean
 gst_mfxenc_set_format (GstVideoEncoder * venc, GstVideoCodecState * state)
 {
   GstMfxEnc *const encode = GST_MFXENC_CAST (venc);
+  GstMfxPluginBase *const plugin = GST_MFX_PLUGIN_BASE (venc);
   GstMfxEncoderStatus status;
 
   g_return_val_if_fail (state->caps != NULL, FALSE);
@@ -362,19 +375,26 @@ gst_mfxenc_set_format (GstVideoEncoder * venc, GstVideoCodecState * state)
           state->caps, NULL))
     return FALSE;
 
-  if (!ensure_encoder (encode))
-    return FALSE;
-  if (!set_codec_state (encode, state))
-    return FALSE;
+  if (plugin->sinkpad_caps_changed) {
+    if (encode->encoder) {
+      gst_mfxenc_finish (venc);
+      gst_mfxenc_destroy (encode);
+    }
 
-  status = gst_mfx_encoder_prepare (encode->encoder);
-  if (GST_MFX_ENCODER_STATUS_SUCCESS != status)
-    return FALSE;
+    if (!ensure_encoder (encode))
+      return FALSE;
+    if (!set_codec_state (encode, state))
+      return FALSE;
 
-  if (encode->input_state)
-    gst_video_codec_state_unref (encode->input_state);
-  encode->input_state = gst_video_codec_state_ref (state);
-  encode->input_state_changed = TRUE;
+    status = gst_mfx_encoder_prepare (encode->encoder);
+    if (GST_MFX_ENCODER_STATUS_SUCCESS != status)
+      return FALSE;
+
+    if (encode->input_state)
+      gst_video_codec_state_unref (encode->input_state);
+    encode->input_state = gst_video_codec_state_ref (state);
+    encode->input_state_changed = TRUE;
+  }
 
   return TRUE;
 }
@@ -449,30 +469,6 @@ error_encode_frame:
   }
 }
 
-static GstFlowReturn
-gst_mfxenc_finish (GstVideoEncoder * venc)
-{
-  GstMfxEnc *const encode = GST_MFXENC_CAST (venc);
-  GstMfxEncoderStatus status;
-  GstVideoCodecFrame *frame;
-  GstFlowReturn ret = GST_FLOW_OK;
-
-  /* Return "not-negotiated" error since this means we did not even reach
-   * GstVideoEncoder::set_format () state, where the encoder could have
-   * been created */
-  if (!encode->encoder)
-    return GST_FLOW_NOT_NEGOTIATED;
-
-  do {
-    status = gst_mfx_encoder_flush (encode->encoder, &frame);
-    if (GST_MFX_ENCODER_STATUS_SUCCESS != status)
-      break;
-    ret = gst_mfxenc_push_frame (encode, gst_video_codec_frame_ref (frame));
-  } while (GST_FLOW_OK == ret);
-
-  return ret;
-}
-
 static gboolean
 gst_mfxenc_propose_allocation (GstVideoEncoder * venc, GstQuery * query)
 {
@@ -520,8 +516,8 @@ gst_mfxenc_class_init (GstMfxEncClass * klass)
 
   object_class->finalize = gst_mfxenc_finalize;
 
-  venc_class->open = GST_DEBUG_FUNCPTR (gst_mfxenc_open);
   venc_class->stop = GST_DEBUG_FUNCPTR (gst_mfxenc_stop);
+  venc_class->open = GST_DEBUG_FUNCPTR (gst_mfxenc_open);
   venc_class->close = GST_DEBUG_FUNCPTR (gst_mfxenc_close);
   venc_class->set_format = GST_DEBUG_FUNCPTR (gst_mfxenc_set_format);
   venc_class->handle_frame = GST_DEBUG_FUNCPTR (gst_mfxenc_handle_frame);

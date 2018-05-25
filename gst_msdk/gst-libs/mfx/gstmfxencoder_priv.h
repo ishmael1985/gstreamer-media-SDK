@@ -153,6 +153,7 @@ struct _GstMfxEncoderPrivate
   gboolean input_memtype_is_system;
   gboolean shared;
   gboolean inited;
+  gint peer_id;
 
   mfxSession session;
   mfxVideoParam params;
@@ -187,9 +188,10 @@ struct _GstMfxEncoderPrivate
 
   mfxExtCodingOption extco;
   mfxExtCodingOption2 extco2;
+  mfxExtCodingOption3 extco3;
   mfxExtHEVCParam exthevc;
   mfxExtVideoSignalInfo extsig;
-  mfxExtBuffer *extparam_internal[4];
+  mfxExtBuffer *extparam_internal[5];
 
   /* H264 specific coding options */
   gboolean use_cabac;
