@@ -20,7 +20,12 @@
 
 #include "sysdeps.h"
 
-#include "common/gstbitwriter.h"
+#if !GST_CHECK_VERSION(1,15,0)
+# include "common/gstbitwriter.h"
+#else
+# include <gst/base/gstbitwriter.h>
+#endif
+
 #include "gstmfxencoder_priv.h"
 #include "gstmfxencoder_h265.h"
 #include <mfxplugin.h>
@@ -32,18 +37,18 @@
 #define DEFAULT_RATECONTROL GST_MFX_RATECONTROL_CQP
 
 /* Supported set of rate control methods, within this implementation */
+#ifdef WITH_D3D11_BACKEND
 #define SUPPORTED_RATECONTROLS                      \
   (GST_MFX_RATECONTROL_MASK (CQP)     |             \
   GST_MFX_RATECONTROL_MASK (CBR)      |             \
   GST_MFX_RATECONTROL_MASK (VBR)      |             \
-  GST_MFX_RATECONTROL_MASK (AVBR)     |             \
-  GST_MFX_RATECONTROL_MASK (QVBR)     |             \
-  GST_MFX_RATECONTROL_MASK (VCM)      |             \
-  GST_MFX_RATECONTROL_MASK (LA_BRC)   |             \
-  GST_MFX_RATECONTROL_MASK (LA_HRD)   |             \
-  GST_MFX_RATECONTROL_MASK (ICQ)      |             \
-  GST_MFX_RATECONTROL_MASK (LA_ICQ))
-
+  GST_MFX_RATECONTROL_MASK (AVBR))
+#else
+#define SUPPORTED_RATECONTROLS                      \
+  (GST_MFX_RATECONTROL_MASK (CQP)     |             \
+  GST_MFX_RATECONTROL_MASK (CBR)      |             \
+  GST_MFX_RATECONTROL_MASK (VBR))
+#endif
 /* ------------------------------------------------------------------------- */
 /* --- H.265 Bitstream Writer                                            --- */
 /* ------------------------------------------------------------------------- */
@@ -81,10 +86,6 @@ ensure_bitrate (GstMfxEncoder * base_encoder)
     case GST_MFX_RATECONTROL_CBR:
     case GST_MFX_RATECONTROL_VBR:
     case GST_MFX_RATECONTROL_AVBR:
-    case GST_MFX_RATECONTROL_QVBR:
-    case GST_MFX_RATECONTROL_VCM:
-    case GST_MFX_RATECONTROL_LA_BRC:
-    case GST_MFX_RATECONTROL_LA_HRD:
       if (!priv->bitrate) {
         guint luma_width = GST_ROUND_UP_32 (GST_MFX_ENCODER_WIDTH (priv));
         guint luma_height = GST_ROUND_UP_32 (GST_MFX_ENCODER_HEIGHT (priv));
@@ -189,7 +190,11 @@ gst_mfx_encoder_h265_get_codec_data (GstMfxEncoder * base_encoder,
   vps_size = vps.VPSBufSize - 4;
 
   /* Header */
-  gst_bit_writer_init (&bs, (vps_size + sps_size + pps_size + 64) * 8);
+#if !GST_CHECK_VERSION(1,15,0)
+  gst_bit_writer_init (&bs, (sps_size + pps_size + 64) * 8);
+#else
+  gst_bit_writer_init_with_size (&bs, sps_size + pps_size + 64, FALSE);
+#endif
   WRITE_UINT32 (&bs, configuration_version, 8);
 
   /* profile_space | tier_flag | profile_idc */
@@ -256,28 +261,39 @@ gst_mfx_encoder_h265_get_codec_data (GstMfxEncoder * base_encoder,
   WRITE_UINT32 (&bs, 0x01, 16); /* numNalus, PPS count = 1 */
   WRITE_UINT32 (&bs, pps_size, 16);     /* PPS nalUnitLength */
   gst_bit_writer_put_bytes (&bs, pps_info, pps_size);
-
+#if !GST_CHECK_VERSION(1,15,0)
   buffer =
       gst_buffer_new_wrapped (GST_BIT_WRITER_DATA (&bs),
       GST_BIT_WRITER_BIT_SIZE (&bs) / 8);
+#else
+  buffer = gst_bit_writer_reset_and_get_buffer (&bs);
+#endif
   if (!buffer)
     goto error_alloc_buffer;
   *out_buffer_ptr = buffer;
-
+#if !GST_CHECK_VERSION(1,15,0)
   gst_bit_writer_clear (&bs, FALSE);
-
+#endif
   return GST_MFX_ENCODER_STATUS_SUCCESS;
   /* ERRORS */
 bs_error:
   {
     GST_ERROR ("failed to write codec-data");
+#if !GST_CHECK_VERSION(1,15,0)
     gst_bit_writer_clear (&bs, TRUE);
+#else
+    gst_bit_writer_reset (&bs);
+#endif
     return FALSE;
   }
 error_alloc_buffer:
   {
     GST_ERROR ("failed to allocate codec-data buffer");
+#if !GST_CHECK_VERSION(1,15,0)
     gst_bit_writer_clear (&bs, TRUE);
+#else
+    gst_bit_writer_reset (&bs);
+#endif
     return GST_MFX_ENCODER_STATUS_ERROR_ALLOCATION_FAILED;
   }
 }
@@ -322,25 +338,6 @@ gst_mfx_encoder_h265_load_plugin (GstMfxEncoder * base_encoder)
   return FALSE;
 }
 
-static GstMfxEncoderStatus
-gst_mfx_encoder_h265_set_property (GstMfxEncoder * base_encoder,
-    gint prop_id, const GValue * value)
-{
-  GstMfxEncoderPrivate *const priv = GST_MFX_ENCODER_GET_PRIVATE (base_encoder);
-
-  switch (prop_id) {
-    case GST_MFX_ENCODER_H265_PROP_LA_DEPTH:
-      priv->la_depth = g_value_get_uint (value);
-      break;
-    case GST_MFX_ENCODER_H265_PROP_LOOKAHEAD_DS:
-      priv->look_ahead_downsampling = g_value_get_enum (value);
-      break;
-    default:
-      return GST_MFX_ENCODER_STATUS_ERROR_INVALID_PARAMETER;
-  }
-  return GST_MFX_ENCODER_STATUS_SUCCESS;
-}
-
 GstMfxEncoder *
 gst_mfx_encoder_h265_new (GstMfxTaskAggregator * aggregator,
     const GstVideoInfo * info, gboolean memtype_is_system)
@@ -379,33 +376,6 @@ gst_mfx_encoder_h265_get_default_properties (void)
     props = gst_mfx_encoder_properties_get_default (klass);
     g_type_class_unref (klass);
   }
-  if (!props)
-    return NULL;
-
- /**
-  * GstMfxEncoderH265:la-depth
-  *
-  * Depth of look ahead in number frames.
-  */
-  GST_MFX_ENCODER_PROPERTIES_APPEND (props,
-      GST_MFX_ENCODER_H265_PROP_LA_DEPTH,
-      g_param_spec_uint ("la-depth",
-          "Lookahead depth", "Depth of lookahead in frames", 0, 100, 0,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
- /**
-  * GstMfxEncoderH265:lookahead-ds
-  *
-  * Look ahead downsampling
-  */
-  GST_MFX_ENCODER_PROPERTIES_APPEND (props,
-      GST_MFX_ENCODER_H265_PROP_LOOKAHEAD_DS,
-      g_param_spec_enum ("lookahead-ds",
-          "Look ahead downsampling",
-          "Look ahead downsampling",
-          gst_mfx_encoder_lookahead_ds_get_type (),
-          GST_MFX_ENCODER_LOOKAHEAD_DS_AUTO,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   return props;
 }
@@ -447,7 +417,6 @@ gst_mfx_encoder_h265_class_init (GstMfxEncoderH265Class * klass)
   encoder_class->get_default_properties =
       gst_mfx_encoder_h265_get_default_properties;
 
-  encoder_class->set_property = gst_mfx_encoder_h265_set_property;
   encoder_class->get_codec_data = gst_mfx_encoder_h265_get_codec_data;
   encoder_class->load_plugin = gst_mfx_encoder_h265_load_plugin;
 }

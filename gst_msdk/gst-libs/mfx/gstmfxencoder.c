@@ -562,6 +562,18 @@ gst_mfx_encoder_finalize_params (GstMfxEncoder * encoder)
   /* Encoder expects progressive frames as input */
   priv->params.mfx.FrameInfo.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
 
+  if (MFX_CODEC_AVC == priv->profile.codec) {
+#if MSDK_CHECK_VERSION(1,25)
+    if (GST_MFX_CHECK_RUNTIME_VERSION (priv->aggregator, 1, 25)) {
+      priv->extmfp.Header.BufferId = MFX_EXTBUFF_MULTI_FRAME_PARAM;
+      priv->extmfp.Header.BufferSz = sizeof (priv->extmfp);
+      priv->extmfp.MFMode = priv->multiframe_mode;
+      priv->extparam_internal[priv->params.NumExtParam++] =
+        (mfxExtBuffer *) & priv->extmfp;
+    }
+#endif
+  }
+
   /* Write colorimetry information to bitstream */
   gst_mfx_encoder_extsig_from_colorimetry (encoder,
       &GST_VIDEO_INFO_COLORIMETRY (&priv->info));
@@ -1103,19 +1115,33 @@ error:
   return FALSE;
 }
 
-static
-void
+static void
 log_encoder_params_comparison (GstMfxEncoder * encoder, int log_level,
-  mfxVideoParam* param_old, mfxVideoParam* param_new)
+    mfxVideoParam * param_old, mfxVideoParam * param_new)
 {
   /* TODO: handle and log more differences. */
-  if (param_old->mfx.FrameInfo.Height != param_new->mfx.FrameInfo.Height
-      || param_old->mfx.FrameInfo.Width != param_new->mfx.FrameInfo.Width) {
+#define UNMATCH(x) (param_old->mfx.x != param_new->mfx.x)
+  if (UNMATCH (CodecId))
     GST_CAT_LEVEL_LOG (GST_CAT_DEFAULT, log_level, encoder,
-        "resolution has been changed from %dx%d to %dx%d",
+        "Current codec type is unsupported");
+  if (UNMATCH (CodecProfile))
+    GST_CAT_LEVEL_LOG (GST_CAT_DEFAULT, log_level, encoder,
+        "Current profile is unsupported");
+  if (UNMATCH (RateControlMethod))
+    GST_CAT_LEVEL_LOG (GST_CAT_DEFAULT, log_level, encoder,
+        "Specified rate control method is unsupported");
+  if (UNMATCH (FrameInfo.FrameRateExtN) || UNMATCH (FrameInfo.FrameRateExtD))
+    GST_CAT_LEVEL_LOG (GST_CAT_DEFAULT, log_level, encoder,
+        "Frame rate changed from %d/%d to %d/%d",
+        param_old->mfx.FrameInfo.FrameRateExtN,
+        param_old->mfx.FrameInfo.FrameRateExtD,
+        param_new->mfx.FrameInfo.FrameRateExtN,
+        param_new->mfx.FrameInfo.FrameRateExtD);
+  if (UNMATCH (FrameInfo.Width) || UNMATCH (FrameInfo.Height))
+    GST_CAT_LEVEL_LOG (GST_CAT_DEFAULT, log_level, encoder,
+        "Resolution changed from %dx%d to %dx%d",
         param_old->mfx.FrameInfo.Width, param_old->mfx.FrameInfo.Height,
         param_new->mfx.FrameInfo.Width, param_new->mfx.FrameInfo.Height);
-  }
 }
 
 GstMfxEncoderStatus
@@ -1699,6 +1725,31 @@ gst_mfx_encoder_preset_get_type (void)
   }
   return g_type;
 }
+
+#if MSDK_CHECK_VERSION(1,25)
+GType
+gst_mfx_encoder_multiframe_get_type (void)
+{
+  static volatile gsize g_type = 0;
+
+  static const GEnumValue multiframe_modes[] = {
+      { GST_MFX_ENCODER_MULTIFRAME_DISABLED,
+            "Disable multi-frame optimization", "disabled" },
+      { GST_MFX_ENCODER_MULTIFRAME_AUTO,
+            "Auto-decide multi-frame optimization mode", "auto" },
+      { GST_MFX_ENCODER_MULTIFRAME_DEFAULT,
+            "Use default multi-frame optimization mode", "default" },
+      { 0, NULL, NULL },
+  };
+
+  if (g_once_init_enter (&g_type)) {
+    GType type = g_enum_register_static ("GstMfxEncoderMultiFrame",
+        multiframe_modes);
+    g_once_init_leave (&g_type, type);
+  }
+  return g_type;
+}
+#endif
 
 GType
 gst_mfx_encoder_trellis_get_type (void)

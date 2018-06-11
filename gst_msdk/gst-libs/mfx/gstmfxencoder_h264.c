@@ -22,7 +22,12 @@
 
 #include "sysdeps.h"
 
-#include "common/gstbitwriter.h"
+#if !GST_CHECK_VERSION(1,15,0)
+# include "common/gstbitwriter.h"
+#else
+# include <gst/base/gstbitwriter.h>
+#endif
+
 #include "gstmfxencoder_priv.h"
 #include "gstmfxencoder_h264.h"
 
@@ -33,6 +38,7 @@
 #define DEFAULT_RATECONTROL GST_MFX_RATECONTROL_CQP
 
 /* Supported set of rate control methods, within this implementation */
+#ifdef WITH_D3D11_BACKEND
 #define SUPPORTED_RATECONTROLS                      \
   (GST_MFX_RATECONTROL_MASK (CQP)     |             \
   GST_MFX_RATECONTROL_MASK (CBR)      |             \
@@ -44,6 +50,15 @@
   GST_MFX_RATECONTROL_MASK (LA_HRD)   |             \
   GST_MFX_RATECONTROL_MASK (ICQ)      |             \
   GST_MFX_RATECONTROL_MASK (LA_ICQ))
+#else
+#define SUPPORTED_RATECONTROLS                      \
+  (GST_MFX_RATECONTROL_MASK (CQP)     |             \
+  GST_MFX_RATECONTROL_MASK (CBR)      |             \
+  GST_MFX_RATECONTROL_MASK (VBR)      |             \
+  GST_MFX_RATECONTROL_MASK (LA_BRC)   |             \
+  GST_MFX_RATECONTROL_MASK (LA_HRD)   |             \
+  GST_MFX_RATECONTROL_MASK (LA_ICQ))
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* --- H.264 Bitstream Writer                                            --- */
@@ -177,7 +192,11 @@ gst_mfx_encoder_h264_get_codec_data (GstMfxEncoder * base_encoder,
   level_idc = sps_info[3];
 
   /* Header */
+#if !GST_CHECK_VERSION(1,15,0)
   gst_bit_writer_init (&bs, (sps_size + pps_size + 64) * 8);
+#else
+  gst_bit_writer_init_with_size (&bs, sps_size + pps_size + 64, FALSE);
+#endif
   WRITE_UINT32 (&bs, configuration_version, 8);
   WRITE_UINT32 (&bs, profile_idc, 8);
   WRITE_UINT32 (&bs, profile_comp, 8);
@@ -197,28 +216,40 @@ gst_mfx_encoder_h264_get_codec_data (GstMfxEncoder * base_encoder,
   WRITE_UINT32 (&bs, pps_size, 16);
   gst_bit_writer_put_bytes (&bs, pps_info, pps_size);
 
+#if !GST_CHECK_VERSION(1,15,0)
   buffer =
       gst_buffer_new_wrapped (GST_BIT_WRITER_DATA (&bs),
       GST_BIT_WRITER_BIT_SIZE (&bs) / 8);
+#else
+  buffer = gst_bit_writer_reset_and_get_buffer (&bs);
+#endif
   if (!buffer)
     goto error_alloc_buffer;
   *out_buffer_ptr = buffer;
-
+#if !GST_CHECK_VERSION(1,15,0)
   gst_bit_writer_clear (&bs, FALSE);
-
+#endif
   return GST_MFX_ENCODER_STATUS_SUCCESS;
 
   /* ERRORS */
 bs_error:
   {
     GST_ERROR ("failed to write codec-data");
+#if !GST_CHECK_VERSION(1,15,0)
     gst_bit_writer_clear (&bs, TRUE);
+#else
+    gst_bit_writer_reset (&bs);
+#endif
     return FALSE;
   }
 error_alloc_buffer:
   {
     GST_ERROR ("failed to allocate codec-data buffer");
+#if !GST_CHECK_VERSION(1,15,0)
     gst_bit_writer_clear (&bs, TRUE);
+#else
+    gst_bit_writer_reset (&bs);
+#endif
     return GST_MFX_ENCODER_STATUS_ERROR_ALLOCATION_FAILED;
   }
 }
@@ -242,6 +273,11 @@ gst_mfx_encoder_h264_set_property (GstMfxEncoder * base_encoder,
     case GST_MFX_ENCODER_H264_PROP_TRELLIS:
       priv->trellis = g_value_get_enum (value);
       break;
+#if MSDK_CHECK_VERSION(1,25)
+    case GST_MFX_ENCODER_H264_PROP_MULTIFRAME:
+      priv->multiframe_mode = g_value_get_enum (value);
+      break;
+#endif
     case GST_MFX_ENCODER_H264_PROP_LOOKAHEAD_DS:
       priv->look_ahead_downsampling = g_value_get_enum (value);
       break;
@@ -341,7 +377,6 @@ gst_mfx_encoder_h264_get_default_properties (void)
           gst_mfx_encoder_trellis_get_type (), GST_MFX_ENCODER_TRELLIS_OFF,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
-
   /**
    * GstMfxEncoderH264:lookahead-ds
    *
@@ -356,6 +391,21 @@ gst_mfx_encoder_h264_get_default_properties (void)
           GST_MFX_ENCODER_LOOKAHEAD_DS_AUTO,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+#if MSDK_CHECK_VERSION(1,25)
+  /**
+   * GstMfxEncoderH264:multiframe
+   *
+   * Enable multi-frame 1:N encoding optimization
+   */
+  GST_MFX_ENCODER_PROPERTIES_APPEND (props,
+      GST_MFX_ENCODER_H264_PROP_MULTIFRAME,
+      g_param_spec_enum ("multiframe",
+          "Multi-frame optimization",
+          "Enable multi-frame optimization for 1:N encoding",
+          gst_mfx_encoder_multiframe_get_type (),
+          GST_MFX_ENCODER_MULTIFRAME_DISABLED,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+#endif
   return props;
 }
 
