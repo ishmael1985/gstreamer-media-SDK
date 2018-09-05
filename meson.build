@@ -1,5 +1,5 @@
 project('gst_mfx', 'c', 'cpp',
-  version : '2.1.0',
+  version : '2.1.1',
   meson_version : '>= 0.36.0',
   default_options : [ 'warning_level=1',
                       'buildtype=debugoptimized' ])
